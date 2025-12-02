@@ -34,8 +34,11 @@ PROCESSED_DIR = Path("processed")
 UPLOAD_DIR.mkdir(exist_ok=True)
 PROCESSED_DIR.mkdir(exist_ok=True)
 
-# Mount static files for serving separated audio
-app.mount("/files", StaticFiles(directory="processed"), name="files")
+# Mount static files for serving separated audio (after directories are created)
+try:
+    app.mount("/files", StaticFiles(directory="processed"), name="files")
+except Exception as e:
+    logger.warning(f"Could not mount static files: {e}")
 
 def separate_audio_simple(input_path, output_dir):
     """
@@ -78,6 +81,13 @@ def separate_audio_simple(input_path, output_dir):
     sf.write(str(instruments_path), instruments, sr)
     
     return str(vocals_path), str(instruments_path)
+
+@app.on_event("startup")
+async def startup_event():
+    """Ensure directories exist on startup"""
+    UPLOAD_DIR.mkdir(exist_ok=True)
+    PROCESSED_DIR.mkdir(exist_ok=True)
+    logger.info("Directories created successfully")
 
 @app.get("/")
 async def root():
