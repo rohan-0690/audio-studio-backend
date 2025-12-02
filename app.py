@@ -7,7 +7,10 @@ import os
 import uuid
 from pathlib import Path
 import shutil
-from spleeter.separator import Separator
+import librosa
+import soundfile as sf
+import numpy as np
+from scipy import signal
 import logging
 
 # Setup logging
@@ -34,16 +37,47 @@ PROCESSED_DIR.mkdir(exist_ok=True)
 # Mount static files for serving separated audio
 app.mount("/files", StaticFiles(directory="processed"), name="files")
 
-# Initialize Spleeter separator (2stems = vocals + accompaniment)
-separator = None
-
-def get_separator():
-    global separator
-    if separator is None:
-        logger.info("Initializing Spleeter separator...")
-        separator = Separator('spleeter:2stems')
-        logger.info("Spleeter initialized successfully")
-    return separator
+def separate_audio_simple(input_path, output_dir):
+    """
+    Simple frequency-based audio separation
+    Separates vocals (mid frequencies) from instruments (other frequencies)
+    """
+    logger.info(f"Loading audio file: {input_path}")
+    
+    # Load audio
+    y, sr = librosa.load(input_path, sr=44100, mono=False)
+    
+    # Convert to mono if stereo
+    if len(y.shape) > 1:
+        y = librosa.to_mono(y)
+    
+    logger.info("Separating audio using frequency analysis...")
+    
+    # Vocals (mid frequencies: 200Hz - 3000Hz)
+    sos_vocals = signal.butter(4, [200, 3000], 'bandpass', fs=sr, output='sos')
+    vocals = signal.sosfilt(sos_vocals, y)
+    
+    # Instruments (everything else)
+    instruments = y - vocals
+    
+    # Normalize
+    vocals = vocals / np.max(np.abs(vocals) + 1e-6) * 0.9
+    instruments = instruments / np.max(np.abs(instruments) + 1e-6) * 0.9
+    
+    # Save files
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    vocals_path = output_dir / "vocals.wav"
+    instruments_path = output_dir / "accompaniment.wav"
+    
+    logger.info(f"Saving vocals to: {vocals_path}")
+    sf.write(str(vocals_path), vocals, sr)
+    
+    logger.info(f"Saving instruments to: {instruments_path}")
+    sf.write(str(instruments_path), instruments, sr)
+    
+    return str(vocals_path), str(instruments_path)
 
 @app.get("/")
 async def root():
@@ -86,14 +120,12 @@ async def separate_audio(audio: UploadFile = File(...)):
         output_dir = PROCESSED_DIR / job_id
         output_dir.mkdir(exist_ok=True)
         
-        # Separate audio using Spleeter
+        # Separate audio using frequency-based method
         logger.info(f"Starting separation for job {job_id}")
-        sep = get_separator()
-        sep.separate_to_file(str(input_path), str(PROCESSED_DIR), filename_format=f"{job_id}/{{instrument}}.{{codec}}")
+        vocals_path_str, instruments_path_str = separate_audio_simple(str(input_path), str(output_dir))
         
-        # Spleeter creates: vocals.wav and accompaniment.wav
-        vocals_path = output_dir / "vocals.wav"
-        accompaniment_path = output_dir / "accompaniment.wav"
+        vocals_path = Path(vocals_path_str)
+        accompaniment_path = Path(instruments_path_str)
         
         if not vocals_path.exists() or not accompaniment_path.exists():
             raise HTTPException(status_code=500, detail="Separation failed - output files not created")
